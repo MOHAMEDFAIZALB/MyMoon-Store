@@ -45,7 +45,7 @@ const productKey = "mymoon-products";
 const cartKey = "mymoon-cart";
 // Set your WhatsApp number in international format without +
 // Using user-provided number (India): 6382553066 => "916382553066"
-const whatsappNumber = "+919943277884";
+const whatsappNumber = "+919486977884";
 
 const currency = (value) => `₹${value.toLocaleString("en-IN")} `;
 
@@ -616,3 +616,4 @@ function toggleMenu() {
   if (icon) icon.classList.toggle('active');
 }
 window.toggleMenu = toggleMenu;
+
