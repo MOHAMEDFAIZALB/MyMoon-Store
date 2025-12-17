@@ -120,6 +120,10 @@ async function loadProductsFromFirebase() {
     }
 
     productsCache = products;
+    // CRITICAL FIX: Persist to LocalStorage so next page load is instant
+    localStorage.setItem(productKey, JSON.stringify(products));
+    console.log("Cached products to LocalStorage");
+
     return products;
   } catch (error) {
     console.error("Error loading products from Firebase:", error);
