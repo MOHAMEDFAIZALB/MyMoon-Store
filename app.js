@@ -43,6 +43,8 @@ const defaultProducts = [
 
 const productKey = "mymoon-products";
 const cartKey = "mymoon-cart";
+// Set your WhatsApp number in international format without +
+// Using user-provided number (India): 6382553066 => "916382553066"
 const whatsappNumber = "+919486977884";
 
 const currency = (value) => `₹${value.toLocaleString("en-IN")} `;
@@ -387,66 +389,108 @@ async function renderCart() {
     return;
   }
 
-  container.innerHTML = "";
-  let subtotal = 0;
+  // Helper: Renders the cart UI given a specific catalog
+  const renderItems = (currentCatalog) => {
+    let subtotal = 0;
+    container.innerHTML = "";
 
+    console.log("Rendering cart with catalog size:", currentCatalog.length);
 
+    cart.forEach((item) => {
+      const product = currentCatalog.find((p) => p.id === item.id);
+      if (!product) {
+        // Handle "Unknown Item" case gracefully
+        console.warn(`Product ${item.id} not found in catalog.`);
+        return;
+      }
 
+      const hasDiscount = product.discount && product.discount > 0;
+      const finalPrice = hasDiscount ? Math.round(product.price - (product.price * product.discount / 100)) : product.price;
+      const lineTotal = finalPrice * item.qty;
+      subtotal += lineTotal;
 
-
-
-  // OPTIMIZATION: Use synchronous load first (Mem cache > LocalStorage > Default)
-  const catalog = loadProducts();
-
-  cart.forEach((item) => {
-    const product = catalog.find((p) => p.id === item.id);
-    if (!product) return;
-    const hasDiscount = product.discount && product.discount > 0;
-    const finalPrice = hasDiscount ? Math.round(product.price - (product.price * product.discount / 100)) : product.price;
-    const lineTotal = finalPrice * item.qty;
-    subtotal += lineTotal;
-
-    const row = document.createElement("div");
-    row.className = "cart-item";
-    row.innerHTML = `
-      <img src="${product.image}" alt="${product.name}">
-      
-      <div class="cart-details">
-        <div>
-          <div class="cart-title">${product.name}</div>
-          <div class="muted">${product.grams}g pack</div>
-        </div>
+      const row = document.createElement("div");
+      row.className = "cart-item";
+      row.innerHTML = `
+        <img src="${product.image}" alt="${product.name}" onerror="this.src='./img/logo.png'">
         
-        <div class="price-row" style="margin: 4px 0;">
-           ${hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
-           <span class="price-final">${currency(lineTotal)}</span>
+        <div class="cart-details">
+          <div>
+            <div class="cart-title">${product.name}</div>
+            <div class="muted">${product.grams}g pack</div>
+          </div>
+          
+          <div class="price-row" style="margin: 4px 0;">
+             ${hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
+             <span class="price-final">${currency(lineTotal)}</span>
+          </div>
         </div>
-      </div>
 
-      <div style="display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between;">
-        <div class="qty-controls" style="border: 1px solid #eee; border-radius: 6px; display: flex;">
-          <button data-action="dec" data-id="${product.id}" style="padding: 4px 10px; border:none; background:none;">-</button>
-          <span style="font-weight:600; padding: 4px 8px;">${item.qty}</span>
-          <button data-action="inc" data-id="${product.id}" style="padding: 4px 10px; border:none; background:none;">+</button>
+        <div style="display: flex; flex-direction: column; align-items: flex-end; justify-content: space-between;">
+          <div class="qty-controls" style="border: 1px solid #eee; border-radius: 6px; display: flex;">
+            <button data-action="dec" data-id="${product.id}" style="padding: 4px 10px; border:none; background:none;">-</button>
+            <span style="font-weight:600; padding: 4px 8px;">${item.qty}</span>
+            <button data-action="inc" data-id="${product.id}" style="padding: 4px 10px; border:none; background:none;">+</button>
+          </div>
+          <button class="button text-only warning" data-action="remove" data-id="${product.id}" style="color:var(--primary); font-size:0.8rem; border:none; background:none; padding:0; text-decoration:underline;">Remove</button>
         </div>
-        <button class="button text-only warning" data-action="remove" data-id="${product.id}" style="color:var(--primary); font-size:0.8rem; border:none; background:none; padding:0; text-decoration:underline;">Remove</button>
-      </div>
-`;
-    container.appendChild(row);
-  });
-
-  subtotalEl.textContent = currency(subtotal);
-  totalEl.textContent = currency(subtotal);
-
-  container.querySelectorAll("button[data-action]").forEach((btn) => {
-    const id = btn.dataset.id;
-    const action = btn.dataset.action;
-    btn.addEventListener("click", () => {
-      if (action === "inc") updateQty(id, 1);
-      if (action === "dec") updateQty(id, -1);
-      if (action === "remove") removeFromCart(id);
+      `;
+      container.appendChild(row);
     });
-  });
+
+    subtotalEl.textContent = currency(subtotal);
+    totalEl.textContent = currency(subtotal);
+
+    // Re-attach listeners
+    container.querySelectorAll("button[data-action]").forEach((btn) => {
+      const id = btn.dataset.id;
+      const action = btn.dataset.action;
+      btn.addEventListener("click", () => {
+        // These functions call renderCart() again, so the cycle continues
+        if (action === "inc") updateQty(id, 1);
+        if (action === "dec") updateQty(id, -1);
+        if (action === "remove") removeFromCart(id);
+      });
+    });
+  };
+
+  // STRATEGY: Optimistic Render
+  // 1. Try to render immediately with whatever data we have (Local/Cache)
+  const localCatalog = loadProducts();
+
+  // Check if local catalog has everything we need
+  const missingItems = cart.some(item => !localCatalog.find(p => p.id === item.id));
+
+  if (!missingItems && localCatalog.length > 0) {
+    // Best Case: We have all data locally. Render INSTANTLY.
+    renderItems(localCatalog);
+
+    // Optional: Fetch fresh data in background to prevent price staleness
+    if (typeof window.firebaseDB !== 'undefined' && window.firebaseDB) {
+      // Using .then() ensures we don't block the UI
+      loadProductsFromFirebase().then(freshCatalog => {
+        // You could compare hashes/timestamps here to avoid unnecessary re-renders
+        // For now, we trust the browser repaint speed is fast enough
+        renderItems(freshCatalog);
+      }).catch(e => console.warn("Background cart sync failed", e));
+    }
+  } else {
+    // Worst Case: We are missing data for items in the cart.
+    // We MUST wait for network, otherwise we show empty/broken items.
+    // User sees the Skeleton Loader (html default) until this finishes.
+    if (typeof window.firebaseDB !== 'undefined' && window.firebaseDB) {
+      try {
+        const freshCatalog = await loadProductsFromFirebase();
+        renderItems(freshCatalog);
+      } catch (e) {
+        console.error("Critical cart load failure", e);
+        // Fallback: Show what we can
+        renderItems(localCatalog);
+      }
+    } else {
+      renderItems(localCatalog);
+    }
+  }
 }
 
 function toast(message) {
@@ -614,5 +658,3 @@ function toggleMenu() {
   if (icon) icon.classList.toggle('active');
 }
 window.toggleMenu = toggleMenu;
-
-
