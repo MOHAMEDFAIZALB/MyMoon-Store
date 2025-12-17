@@ -306,25 +306,16 @@ async function renderProducts(filter = "all", forceLocal = false) {
   // Debounce rapid filter changes
   clearTimeout(renderProductsTimeout);
 
-  // NOTE: If forceLocal is true, we skip debounce to render instantly on load
-  const delay = forceLocal ? 0 : 150;
-
-  renderProductsTimeout = setTimeout(async () => {
-    let items;
-    // OPTIMIZATION: Check forceLocal first
-    if (!forceLocal && typeof window.firebaseDB !== 'undefined' && window.firebaseDB) {
-      items = await loadProductsFromFirebase();
-    } else {
-      items = loadProducts();
-    }
-
+  const performRender = async (items) => {
     const filtered = filter === "all" ? items : items.filter((p) => p.category === filter);
 
     // Only re-render if products actually changed
     const newIds = new Set(filtered.map(p => p.id));
     if (lastFilter === filter && renderedProductIds.size === newIds.size) {
-      const isSame = [...newIds].every(id => renderedProductIds.has(id));
-      if (isSame) return; // No changes needed
+      // Deep check for price changes to fix "0" bug
+      const signature = filtered.map(p => `${p.id}:${p.price}`).join('|');
+      if (grid.dataset.sig === signature) return;
+      grid.dataset.sig = signature;
     }
 
     lastFilter = filter;
@@ -336,13 +327,14 @@ async function renderProducts(filter = "all", forceLocal = false) {
     filtered.forEach((product) => {
       const hasDiscount = product.discount && product.discount > 0;
       const finalPrice = hasDiscount ? Math.round(product.price - (product.price * product.discount / 100)) : product.price;
-      if (hasDiscount) console.log("Rendering discount for:", product.name, product.discount, finalPrice);
+
+      const isPriceLoading = product.price === 0;
 
       const card = document.createElement("article");
       card.className = "card product";
       card.innerHTML = `
         <div style="position:relative;">
-          <img src="${product.image}" alt="${product.name}" loading="lazy" decoding="async" />
+          <img src="${product.image}" alt="${product.name}" loading="lazy" decoding="async" onerror="this.src='./img/logo.png'" />
           <div class="pill">${(product.category || product.tag || "Snack").toUpperCase()}</div>
         </div>
         <h3 style="margin-bottom: 4px;">${product.name}</h3>
@@ -350,17 +342,19 @@ async function renderProducts(filter = "all", forceLocal = false) {
         
         <div style="display:flex; flex-direction:column; margin-top:auto;">
            <div class="price-row">
-             ${hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
-             ${hasDiscount ? `<span class="price-original">${currency(product.price)}</span>` : ''}
-             <span class="price-final">${currency(finalPrice)}</span>
+             ${!isPriceLoading && hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
+             ${!isPriceLoading && hasDiscount ? `<span class="price-original">${currency(product.price)}</span>` : ''}
+             <span class="price-final">${isPriceLoading ? '<span class="spin">↻</span>' : currency(finalPrice)}</span>
            </div>
            
-           ${hasDiscount ? `<div style="background:#e8f2fe; color:#1a73e8; border:1px solid #d2e3fc; padding:6px; border-radius:6px; margin-top:8px; font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:6px;">
+           ${hasDiscount && !isPriceLoading ? `<div style="background:#e8f2fe; color:#1a73e8; border:1px solid #d2e3fc; padding:6px; border-radius:6px; margin-top:8px; font-size:0.85rem; font-weight:600; display:flex; align-items:center; gap:6px;">
               <span style="background:#1a73e8; color:white; padding:2px 6px; border-radius:4px; font-size:0.75rem;">DEAL</span>
               Best Price
            </div>` : ''}
 
-           <button class="button primary" data-product="${product.id}" style="margin-top:12px; width:100%;">Add to Cart</button>
+           <button class="button primary" data-product="${product.id}" ${isPriceLoading ? 'disabled' : ''} style="margin-top:12px; width:100%;">
+             ${isPriceLoading ? 'Loading...' : 'Add to Cart'}
+           </button>
         </div>
 `;
       fragment.appendChild(card);
@@ -368,11 +362,42 @@ async function renderProducts(filter = "all", forceLocal = false) {
 
     grid.appendChild(fragment);
 
-    // Event delegation for click handlers
+    // Event delegation
     grid.querySelectorAll("[data-product]").forEach((btn) => {
-      btn.addEventListener("click", (e) => addToCart(e.currentTarget.dataset.product, e.currentTarget));
+      if (!btn.disabled) {
+        btn.addEventListener("click", (e) => addToCart(e.currentTarget.dataset.product, e.currentTarget));
+      }
     });
-  }, delay);
+
+    if (filtered.length === 0) {
+      grid.innerHTML = `<div style="grid-column: 1/-1; text-align:center; padding: 40px; opacity: 0.6;">No products found in this category.</div>`;
+    }
+  };
+
+  // STRATEGY: Optimistic Render
+  // 1. Render immediate local data
+  const localItems = loadProducts();
+  // If we have local items, render them immediately (even if prices are 0, UI handles it)
+  if (localItems && localItems.length > 0) {
+    performRender(localItems);
+  }
+
+  // 2. Background Sync (unless forced local)
+  const delay = (forceLocal || (localItems && localItems.length > 0)) ? 0 : 100;
+
+  if (!forceLocal && typeof window.firebaseDB !== 'undefined' && window.firebaseDB) {
+    // Delay slightly if we entered 'loading' state to avoid flicker, 
+    // but if we already rendered local, this just updates in place.
+    setTimeout(() => {
+      loadProductsFromFirebase().then(freshItems => {
+        console.log("Shop synced with cloud");
+        performRender(freshItems);
+      }).catch(e => console.warn("Shop sync failed", e));
+    }, delay);
+  } else if (items.length === 0 && delay > 0) {
+    // If no local data and no firebase, render empty/defaults eventually
+    performRender(defaultProducts);
+  }
 }
 
 async function renderCart() {
@@ -409,6 +434,8 @@ async function renderCart() {
       const lineTotal = finalPrice * item.qty;
       subtotal += lineTotal;
 
+      const isPriceLoading = product.price === 0;
+
       const row = document.createElement("div");
       row.className = "cart-item";
       row.innerHTML = `
@@ -421,8 +448,8 @@ async function renderCart() {
           </div>
           
           <div class="price-row" style="margin: 4px 0;">
-             ${hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
-             <span class="price-final">${currency(lineTotal)}</span>
+             ${!isPriceLoading && hasDiscount ? `<span class="price-discount">↓${product.discount}%</span>` : ''}
+             <span class="price-final">${isPriceLoading ? '<span class="spin">↻</span>' : currency(lineTotal)}</span>
           </div>
         </div>
 
